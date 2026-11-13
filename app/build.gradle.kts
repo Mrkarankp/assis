@@ -11,6 +11,7 @@ android {
         targetSdk = 34
         versionCode = 20
         versionName = "1.0"
+        ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a") }
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
