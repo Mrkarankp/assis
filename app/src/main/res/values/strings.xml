@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="a11y_desc">Lets My Assistant press the Send button in WhatsApp after you ask it to send a message. It does nothing else.</string>
+</resources>
