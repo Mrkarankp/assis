@@ -1,0 +1,41 @@
+name: Build Brother Voice APK
+on:
+  push:
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - name: Bundle voice model into the APK
+        continue-on-error: true
+        run: |
+          set -e
+          mkdir -p tmpm app/src/main/assets
+          curl -fL --retry 3 -o m.zip https://alphacephei.com/vosk/models/vosk-model-small-en-in-0.4.zip || curl -fL --retry 3 -o m.zip https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip
+          unzip -q m.zip -d tmpm
+          mv tmpm/* app/src/main/assets/model-in
+      - name: Show project files
+        run: |
+          ls
+          grep -n "applicationId\|vosk" app/build.gradle.kts
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.7
+      - run: gradle assembleDebug
+      - name: Check APK (fails if it is too small)
+        run: |
+          f=app/build/outputs/apk/debug/app-debug.apk
+          ls -l "$f"
+          unzip -l "$f" | grep -E "libvosk|libjnidispatch|model-in/am/final.mdl|kotlin" | head -15 || true
+          sz=$(stat -c%s "$f"); echo "APK bytes: $sz"
+          test "$sz" -gt 8000000
+          cp "$f" BrotherVoice.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: BrotherVoice-APK
+          path: BrotherVoice.apk
