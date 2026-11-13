@@ -11,23 +11,63 @@ jobs:
         with:
           distribution: temurin
           java-version: 17
+      - name: Find or repair the project folder
+        id: find
+        run: |
+          echo "Files in repo:"
+          find . -maxdepth 4 -not -path './.git/*' | head -60 || true
+          f=$(find . -not -path './.git/*' -name settings.gradle.kts | head -1 || true)
+          if [ -n "$f" ]; then
+            d=$(dirname "$f")
+          else
+            a=$(find . -not -path './.git/*' -path '*/app/build.gradle.kts' | head -1 || true)
+            if [ -z "$a" ]; then echo "ERROR: the app folder was not uploaded (app/build.gradle.kts not found)"; exit 1; fi
+            d=$(dirname "$(dirname "$a")")
+            echo "settings.gradle.kts was missing, creating it"
+            cat > "$d/settings.gradle.kts" <<'EOS'
+          pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
+          dependencyResolutionManagement { repositories { google(); mavenCentral() } }
+          rootProject.name = "BrotherVoice"
+          include(":app")
+          EOS
+          fi
+          if [ ! -f "$d/build.gradle.kts" ]; then
+            echo "root build.gradle.kts was missing, creating it"
+            cat > "$d/build.gradle.kts" <<'EOS'
+          plugins {
+              id("com.android.application") version "8.5.2" apply false
+              id("org.jetbrains.kotlin.android") version "1.9.24" apply false
+          }
+          EOS
+          fi
+          if [ ! -f "$d/app/debug.keystore" ]; then
+            echo "debug.keystore was missing, creating it"
+            keytool -genkeypair -keystore "$d/app/debug.keystore" -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 36500 -dname "CN=Android Debug,O=Android,C=US"
+          fi
+          echo "Project folder: $d"
+          echo "dir=$d" >> "$GITHUB_OUTPUT"
       - name: Bundle voice model into the APK
         continue-on-error: true
+        working-directory: ${{ steps.find.outputs.dir }}
         run: |
           set -e
           mkdir -p tmpm app/src/main/assets
           curl -fL --retry 3 -o m.zip https://alphacephei.com/vosk/models/vosk-model-small-en-in-0.4.zip || curl -fL --retry 3 -o m.zip https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip
           unzip -q m.zip -d tmpm
           mv tmpm/* app/src/main/assets/model-in
-      - name: Show project files
+      - name: Show project settings
+        working-directory: ${{ steps.find.outputs.dir }}
         run: |
           ls
           grep -n "applicationId\|vosk" app/build.gradle.kts
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: 8.7
-      - run: gradle assembleDebug
+      - name: Build APK
+        working-directory: ${{ steps.find.outputs.dir }}
+        run: gradle assembleDebug
       - name: Check APK (fails if it is too small)
+        working-directory: ${{ steps.find.outputs.dir }}
         run: |
           f=app/build/outputs/apk/debug/app-debug.apk
           ls -l "$f"
@@ -38,4 +78,4 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: BrotherVoice-APK
-          path: BrotherVoice.apk
+          path: ${{ steps.find.outputs.dir }}/BrotherVoice.apk
