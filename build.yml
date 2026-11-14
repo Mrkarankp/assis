@@ -55,6 +55,29 @@ jobs:
             keytool -genkeypair -keystore app/debug.keystore -storetype JKS -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -sigalg SHA256withRSA -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
           fi
           keytool -list -keystore app/debug.keystore -storepass android | head -5 || true
+      - name: Show project settings
+        working-directory: ${{ steps.find.outputs.dir }}
+        run: |
+          ls
+          grep -n "applicationId\|vosk\|abiFilters" app/build.gradle.kts
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.7
+      - name: Build LITE APK (no voice model inside, small)
+        working-directory: ${{ steps.find.outputs.dir }}
+        run: |
+          gradle assembleDebug
+          cp app/build/outputs/apk/debug/app-debug.apk BrotherVoice-LITE.apk
+      - name: Build test APK for the emulator (adds x86_64)
+        continue-on-error: true
+        working-directory: ${{ steps.find.outputs.dir }}
+        run: |
+          cp app/build.gradle.kts /tmp/build.gradle.kts.bak
+          sed -i 's/"armeabi-v7a")/"armeabi-v7a", "x86_64")/' app/build.gradle.kts
+          grep -n abiFilters app/build.gradle.kts || true
+          gradle assembleDebug
+          cp app/build/outputs/apk/debug/app-debug.apk emulator-test.apk
+          cp /tmp/build.gradle.kts.bak app/build.gradle.kts
       - name: Bundle voice model into the APK
         continue-on-error: true
         working-directory: ${{ steps.find.outputs.dir }}
@@ -64,29 +87,22 @@ jobs:
           curl -fL --retry 3 -o m.zip https://alphacephei.com/vosk/models/vosk-model-small-en-in-0.4.zip || curl -fL --retry 3 -o m.zip https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip
           unzip -q m.zip -d tmpm
           mv tmpm/* app/src/main/assets/model-in
-      - name: Show project settings
+      - name: Build FULL APK (voice model inside)
         working-directory: ${{ steps.find.outputs.dir }}
         run: |
-          ls
-          grep -n "applicationId\|vosk\|abiFilters" app/build.gradle.kts
-      - uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: 8.7
-      - name: Build APK
-        working-directory: ${{ steps.find.outputs.dir }}
-        run: gradle assembleDebug
-      - name: Check and verify APK
+          gradle assembleDebug
+          cp app/build/outputs/apk/debug/app-debug.apk BrotherVoice.apk
+      - name: Check and verify APKs
         working-directory: ${{ steps.find.outputs.dir }}
         run: |
-          f=app/build/outputs/apk/debug/app-debug.apk
-          ls -l "$f"
-          unzip -l "$f" | grep -E "libvosk|libjnidispatch|model-in/am/final.mdl" | head -15 || true
-          sz=$(stat -c%s "$f"); echo "APK bytes: $sz"
-          test "$sz" -gt 3000000
-          cp "$f" BrotherVoice.apk
+          ls -l BrotherVoice.apk BrotherVoice-LITE.apk
+          for f in BrotherVoice.apk BrotherVoice-LITE.apk; do
+            sz=$(stat -c%s "$f"); echo "$f bytes: $sz"
+            test "$sz" -gt 3000000
+          done
+          unzip -l BrotherVoice.apk | grep -E "libvosk|model-in/am/final.mdl" | head -8 || true
           sdk="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
           bt=$(ls -d "$sdk"/build-tools/* 2>/dev/null | sort -V | tail -1 || true)
-          echo "build-tools: $bt"
           echo "---- SIGNATURE CHECK ----"
           "$bt/apksigner" verify --verbose --print-certs BrotherVoice.apk 2>&1 | head -12 || true
           echo "---- APK INFO ----"
@@ -94,4 +110,49 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: BrotherVoice-APK
-          path: ${{ steps.find.outputs.dir }}/BrotherVoice.apk
+          path: |
+            ${{ steps.find.outputs.dir }}/BrotherVoice.apk
+            ${{ steps.find.outputs.dir }}/BrotherVoice-LITE.apk
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: emulator-test
+          path: ${{ steps.find.outputs.dir }}/emulator-test.apk
+          if-no-files-found: ignore
+  emulator-test:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    continue-on-error: true
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: emulator-test
+      - name: Write test script
+        run: |
+          cat > emu-test.sh <<'EOS'
+          set -x
+          adb install -r emulator-test.apk || { echo "=== INSTALL FAILED (see line above) ==="; exit 1; }
+          pkg=$(adb shell pm list packages | grep -E "brotherapp|com.example.assistant" | head -1 | cut -d: -f2 | tr -d '\r')
+          echo "=== INSTALLED OK: $pkg ==="
+          adb logcat -c
+          adb shell monkey -p "$pkg" -c android.intent.category.LAUNCHER 1
+          sleep 20
+          adb shell pidof "$pkg" && echo "=== APP IS RUNNING ===" || echo "=== APP NOT RUNNING (crashed?) ==="
+          echo "=== CRASH LOG ==="
+          adb logcat -d -s AndroidRuntime:E | head -60
+          EOS
+          ls -l
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Install and launch on an Android 14 emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          arch: x86_64
+          target: google_apis
+          disable-animations: true
+          script: bash ./emu-test.sh
