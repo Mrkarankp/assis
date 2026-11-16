@@ -11,50 +11,29 @@ jobs:
         with:
           distribution: temurin
           java-version: 17
-      - name: Find or repair the project folder
+      - name: Find the project folder
         id: find
         run: |
-          echo "Files in repo:"
-          find . -maxdepth 4 -not -path './.git/*' | head -60 || true
           f=$(find . -not -path './.git/*' -name settings.gradle.kts | head -1 || true)
-          if [ -n "$f" ]; then
-            d=$(dirname "$f")
-          else
+          if [ -n "$f" ]; then d=$(dirname "$f"); else
             a=$(find . -not -path './.git/*' -path '*/app/build.gradle.kts' | head -1 || true)
-            if [ -z "$a" ]; then echo "ERROR: the app folder was not uploaded (app/build.gradle.kts not found)"; exit 1; fi
+            if [ -z "$a" ]; then echo "ERROR: app/build.gradle.kts not found. Upload the app folder to the repo."; exit 1; fi
             d=$(dirname "$(dirname "$a")")
-            echo "settings.gradle.kts was missing, creating it"
-            cat > "$d/settings.gradle.kts" <<'EOS'
-          pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
-          dependencyResolutionManagement { repositories { google(); mavenCentral() } }
-          rootProject.name = "BrotherVoice"
-          include(":app")
-          EOS
           fi
-          if [ ! -f "$d/build.gradle.kts" ]; then
-            echo "root build.gradle.kts was missing, creating it"
-            cat > "$d/build.gradle.kts" <<'EOS'
-          plugins {
-              id("com.android.application") version "8.5.2" apply false
-              id("org.jetbrains.kotlin.android") version "1.9.24" apply false
-          }
-          EOS
-          fi
-          rm -f "$d/app/debug.keystore"
           echo "Project folder: $d"
           echo "dir=$d" >> "$GITHUB_OUTPUT"
-      - name: Restore signing key (same key on every build)
-        uses: actions/cache@v4
-        with:
-          path: ${{ steps.find.outputs.dir }}/app/debug.keystore
-          key: brother-keystore-v1
-      - name: Create signing key if needed
+      - name: Fixed signing key (same key on every build)
+        working-directory: ${{ steps.find.outputs.dir }}
+        env:
+          KS_B64: "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"
+        run: |
+          echo "$KS_B64" | base64 -d > app/debug.keystore
+          keytool -list -v -keystore app/debug.keystore -storepass android | grep SHA256 | head -1
+      - name: Set version code from run number (updates always install over the last build)
         working-directory: ${{ steps.find.outputs.dir }}
         run: |
-          if [ ! -f app/debug.keystore ]; then
-            keytool -genkeypair -keystore app/debug.keystore -storetype JKS -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -sigalg SHA256withRSA -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
-          fi
-          keytool -list -keystore app/debug.keystore -storepass android | head -5 || true
+          sed -i -E "s/versionCode = [0-9]+/versionCode = ${GITHUB_RUN_NUMBER}/" app/build.gradle.kts
+          grep -n "versionCode" app/build.gradle.kts
       - name: Show project settings
         working-directory: ${{ steps.find.outputs.dir }}
         run: |
@@ -63,7 +42,7 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: 8.7
-      - name: Build LITE APK (no voice model inside, small)
+      - name: Build LITE APK (no voice model, small)
         working-directory: ${{ steps.find.outputs.dir }}
         run: |
           gradle assembleDebug
@@ -74,7 +53,6 @@ jobs:
         run: |
           cp app/build.gradle.kts /tmp/build.gradle.kts.bak
           sed -i 's/"armeabi-v7a")/"armeabi-v7a", "x86_64")/' app/build.gradle.kts
-          grep -n abiFilters app/build.gradle.kts || true
           gradle assembleDebug
           cp app/build/outputs/apk/debug/app-debug.apk emulator-test.apk
           cp /tmp/build.gradle.kts.bak app/build.gradle.kts
@@ -100,13 +78,12 @@ jobs:
             sz=$(stat -c%s "$f"); echo "$f bytes: $sz"
             test "$sz" -gt 3000000
           done
-          unzip -l BrotherVoice.apk | grep -E "libvosk|model-in/am/final.mdl" | head -8 || true
           sdk="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
           bt=$(ls -d "$sdk"/build-tools/* 2>/dev/null | sort -V | tail -1 || true)
-          echo "---- SIGNATURE CHECK ----"
-          "$bt/apksigner" verify --verbose --print-certs BrotherVoice.apk 2>&1 | head -12 || true
+          echo "---- SIGNATURE ----"
+          "$bt/apksigner" verify --verbose --print-certs BrotherVoice-LITE.apk 2>&1 | grep -E "Verified|SHA-256" | head -4 || true
           echo "---- APK INFO ----"
-          "$bt/aapt2" dump badging BrotherVoice.apk 2>&1 | grep -E "^package:|sdkVersion|targetSdkVersion|native-code" | head -8 || true
+          "$bt/aapt2" dump badging BrotherVoice-LITE.apk 2>&1 | grep -E "^package:|sdkVersion|native-code" | head -4 || true
       - uses: actions/upload-artifact@v4
         with:
           name: BrotherVoice-APK
@@ -139,10 +116,8 @@ jobs:
           adb shell monkey -p "$pkg" -c android.intent.category.LAUNCHER 1
           sleep 20
           adb shell pidof "$pkg" && echo "=== APP IS RUNNING ===" || echo "=== APP NOT RUNNING (crashed?) ==="
-          echo "=== CRASH LOG ==="
           adb logcat -d -s AndroidRuntime:E | head -60
           EOS
-          ls -l
       - name: Enable KVM
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
