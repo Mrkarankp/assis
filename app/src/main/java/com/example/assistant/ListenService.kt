@@ -43,6 +43,7 @@ class ListenService : Service(), TextToSpeech.OnInitListener {
     private var gRec: SpeechRecognizer? = null
     private var gFails = 0
     private var gRetry = 0
+    private var followUps = 0
     private var wFails = 0
     @Volatile private var wakeGen = 0
     private var engine = "Offline"
@@ -78,8 +79,8 @@ class ListenService : Service(), TextToSpeech.OnInitListener {
         tts.language = Locale.getDefault(); ttsReady = true
         tts.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
             override fun onStart(id: String?) {}
-            override fun onError(id: String?) { speaking = false; ui.post { if (cmds.awaiting()) { busy = true; onWake() } else startWake() } }
-            override fun onDone(id: String?) { speaking = false; ui.post { if (cmds.awaiting()) { busy = true; onWake() } else startWake() } }
+            override fun onError(id: String?) { speaking = false; ui.post { afterSpeech() } }
+            override fun onDone(id: String?) { speaking = false; ui.post { afterSpeech() } }
         })
     }
 
@@ -201,7 +202,7 @@ class ListenService : Service(), TextToSpeech.OnInitListener {
     private fun startWake() {
         val r = wakeRec ?: return
         if (speaking) return
-        cmds.pending = null
+        cmds.pending = null; state("idle")
         val gen = ++wakeGen
         busy = false; note("Listening for “$wake”")
         Thread {
@@ -229,7 +230,7 @@ class ListenService : Service(), TextToSpeech.OnInitListener {
                     val end = r.acceptWaveForm(buf, n)
                     val js = JSONObject(if (end) r.result else r.partialResult)
                     val txt = js.optString("text", js.optString("partial", ""))
-                    if (txt.split(" ").contains(wake)) { wakeGen++; ui.post { if (!busy) { busy = true; onWake() } } }
+                    if (txt.split(" ").contains(wake)) { wakeGen++; ui.post { if (!busy) { busy = true; followUps = 0; onWake() } } }
                 }
             } catch (e: Throwable) { ui.post { status("Mic error: ${e.message}") } }
             finally { try { rec?.stop() } catch (e2: Exception) {}; rec?.release() }
@@ -237,7 +238,7 @@ class ListenService : Service(), TextToSpeech.OnInitListener {
     }
 
     private fun runCommand(t: String) {
-        wakeGen++; speech?.cancel(); note("Heard: $t"); Bus.onLog?.invoke("🧑 [$engine] $t")
+        wakeGen++; speech?.cancel(); state("thinking"); note("Heard: $t"); Bus.onLog?.invoke("🧑 [$engine] $t")
         cmds.lowConf = (engine == "Offline"); cmds.handle(t)
         if (!speaking) { if (cmds.awaiting()) { busy = true; onWake() } else startWake() }
     }
@@ -245,10 +246,13 @@ class ListenService : Service(), TextToSpeech.OnInitListener {
     private fun googleOn() = gFails < 2 && cmds.online() && SpeechRecognizer.isRecognitionAvailable(this) &&
         getSharedPreferences("cfg", MODE_PRIVATE).getBoolean("google", true)
 
-    private fun onWake() {
-        wakeGen++; speech?.cancel(); status("Wake word heard. Speak now…")
-        try { ToneGenerator(AudioManager.STREAM_NOTIFICATION, 80).startTone(ToneGenerator.TONE_PROP_BEEP, 150) } catch (e: Exception) {}
-        ui.postDelayed({ if (whisperOn()) listenWhisper() else if (googleOn()) listenGoogle() else listenVosk() }, 450)
+    private fun onWake(silent: Boolean = false) {
+        wakeGen++; speech?.cancel(); tts.stop(); speaking = false; state("listening")
+        if (!silent) {
+            status("Wake word heard. Speak now…")
+            try { ToneGenerator(AudioManager.STREAM_NOTIFICATION, 80).startTone(ToneGenerator.TONE_PROP_BEEP, 150) } catch (e: Exception) {}
+        }
+        ui.postDelayed({ if (whisperOn()) listenWhisper() else if (googleOn()) listenGoogle() else listenVosk() }, if (silent) 150L else 450L)
     }
 
     private fun listenVosk() {
@@ -381,10 +385,21 @@ class ListenService : Service(), TextToSpeech.OnInitListener {
         })
     }
 
+    private fun state(s: String) { ui.post { Bus.onState?.invoke(s) } }
+
+    private fun afterSpeech() {
+        val follow = getSharedPreferences("cfg", MODE_PRIVATE).getBoolean("follow", true)
+        when {
+            cmds.awaiting() -> { busy = true; onWake() }
+            follow && cmds.lastWasAnswer && followUps < 2 -> { followUps++; busy = true; onWake(true) }
+            else -> { followUps = 0; startWake() }
+        }
+    }
+
     private fun say(t: String) {
         Bus.onLog?.invoke("🤖 $t")
         if (!ttsReady) return
-        speaking = true; wakeGen++; speech?.cancel()
+        speaking = true; wakeGen++; speech?.cancel(); state("speaking")
         prepVoice(tts, this, t)
         tts.speak(t, TextToSpeech.QUEUE_FLUSH, null, "a")
     }

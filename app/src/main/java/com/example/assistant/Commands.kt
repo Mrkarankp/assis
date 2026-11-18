@@ -29,9 +29,11 @@ import org.json.JSONObject
 
 class Commands(private val ctx: Context, private val say: (String) -> Unit, private val background: Boolean) {
     var lowConf = false
+    var lastWasAnswer = false
     var pending: (() -> Unit)? = null
     fun awaiting() = pending != null
     fun handle(raw: String) {
+        lastWasAnswer = false
         pending?.let { p ->
             pending = null
             val y = raw.lowercase()
@@ -47,7 +49,7 @@ class Commands(private val ctx: Context, private val say: (String) -> Unit, priv
         callClaude(ROUTER + (sp.getString("mem", "") ?: ""), msgs) { r ->
             val a = r.trim()
             if (a.startsWith("CMD:")) local(a.removePrefix("CMD:").trim())
-            else { Chat.hist.add("user" to raw); Chat.hist.add("assistant" to a); say(a) }
+            else { Chat.hist.add("user" to raw); Chat.hist.add("assistant" to a); lastWasAnswer = true; say(a) }
         }
     }
 
@@ -67,11 +69,13 @@ class Commands(private val ctx: Context, private val say: (String) -> Unit, priv
         val mail = Regex("\\b(?:write|draft|compose)\\s+(?:an?\\s+)?e-?mail\\b(.*)").find(t)
         val pm = parseMsg(t)
         val wp = webParse(raw)
+        val addList = Regex("^add (.+?) to (?:my |the )?(?:shopping |to ?-?do )?list$").find(t)
+        val homeCity = ctx.getSharedPreferences("cfg", Context.MODE_PRIVATE).getString("city", "Delhi") ?: "Delhi"
         val nav = Regex("\\b(?:navigate to|directions to|take me to|navigate)\\s+(.+)").find(t)
         val calc = Regex("(-?\\d+(?:\\.\\d+)?)\\s*(plus|\\+|minus|-|times|multiplied by|x|\\*|divided by|over|/)\\s*(-?\\d+(?:\\.\\d+)?)").find(t)
         val play = Regex("^play\\s+(.+)").find(t)
         val q = Regex("^(?:what is|what's|what are|who is|who's|who was|why|how does|how do|how to|explain|tell me about|define|meaning of|where is|when did|when was)\\b").containsMatchIn(t) &&
-            !Regex("^(?:what(?:'s| is) (?:the |my |today's )?(?:time|date|day|battery(?: level| percentage)?|weather)(?: is it| right now| today| now| like| outside)?$|what time is it|what day is it|what(?:'s| is) your name|who are you|how are you)").containsMatchIn(t) && calc == null && !t.contains("weather")
+            !Regex("^(?:what(?:'s| is) (?:the |my |today's )?(?:time|date|day|battery(?: level| percentage)?|weather)(?: is it| right now| today| now| like| outside)?$|what time is it|what day is it|what(?:'s| is) your name|who are you|how are you|what(?:'s| is) on (?:my |the )?(?:shopping |to ?-?do )?list)").containsMatchIn(t) && calc == null && !t.contains("weather")
 
         when {
             has("forget everything") || has("clear memory") -> { ctx.getSharedPreferences("cfg", Context.MODE_PRIVATE).edit().remove("mem").apply(); Chat.hist.clear(); say("All memories cleared.") }
@@ -162,7 +166,10 @@ class Commands(private val ctx: Context, private val say: (String) -> Unit, priv
                     say("Okay, I'll remind you in $num ${if (unit == 3600) "hours" else if (unit == 1) "seconds" else "minutes"} to $task.")
                 }
             }
-            has("weather") -> { start(Intent(Intent.ACTION_WEB_SEARCH).putExtra(SearchManager.QUERY, t)); say("Here's the weather.") }
+            has("weather") -> {
+                val city = Regex("\\b(?:in|at|for)\\s+([a-z ]+?)(?:\\s+(?:today|tomorrow|now|right now))?$").find(t)?.groupValues?.get(1)?.trim()?.ifEmpty { null } ?: homeCity
+                weatherSpoken(city, "")
+            }
             has("wifi") || has("wi-fi") || has("bluetooth") || has("airplane") || has("brightness") || has("settings") -> {
                 val a = when {
                     has("bluetooth") -> Settings.ACTION_BLUETOOTH_SETTINGS; has("airplane") -> Settings.ACTION_AIRPLANE_MODE_SETTINGS
@@ -170,7 +177,7 @@ class Commands(private val ctx: Context, private val say: (String) -> Unit, priv
                     else -> Settings.ACTION_WIFI_SETTINGS }
                 start(Intent(a)); say("Opening settings.")
             }
-            has("good morning") -> say("Good morning! Hope you have a great day.")
+            has("good morning") -> weatherSpoken(homeCity, "Good morning! It's " + DateFormat.getTimeInstance(DateFormat.SHORT).format(Date()) + ". ")
             has("good night") -> say("Good night! Sleep well.")
             has("i love you") -> say("That's kind of you. I'm here whenever you need me.")
             verb != null -> openApp(verb.groupValues[1])
@@ -185,6 +192,19 @@ class Commands(private val ctx: Context, private val say: (String) -> Unit, priv
                 val bm = ctx.getSystemService(Context.BATTERY_SERVICE) as BatteryManager
                 say("Battery is at ${bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)} percent.")
             }
+            addList != null -> {
+                val sp = ctx.getSharedPreferences("cfg", Context.MODE_PRIVATE)
+                sp.edit().putString("list", (sp.getString("list", "") ?: "") + addList.groupValues[1] + "\n").apply()
+                say("Added ${addList.groupValues[1]} to your list.")
+            }
+            Regex("^(?:what(?:'s| is) on|read|show) (?:my |the )?(?:shopping |to ?-?do )?list$").containsMatchIn(t) -> {
+                val items = (ctx.getSharedPreferences("cfg", Context.MODE_PRIVATE).getString("list", "") ?: "").split("\n").filter { it.isNotBlank() }
+                say(if (items.isEmpty()) "Your list is empty." else "You have ${items.size} items: " + items.joinToString(", "))
+            }
+            Regex("^(?:clear|empty|delete) (?:my |the )?(?:shopping |to ?-?do )?list$").containsMatchIn(t) -> {
+                ctx.getSharedPreferences("cfg", Context.MODE_PRIVATE).edit().remove("list").apply(); say("Your list is cleared.")
+            }
+            Regex("^(?:stop|cancel|never mind|nevermind|be quiet|quiet|enough)$").containsMatchIn(t) -> { pending = null }
             note != null -> {
                 val sp = ctx.getSharedPreferences("notes", Context.MODE_PRIVATE)
                 sp.edit().putString("n", (sp.getString("n", "") ?: "") + note.groupValues[2] + ". ").apply(); say("Saved.")
@@ -202,7 +222,7 @@ class Commands(private val ctx: Context, private val say: (String) -> Unit, priv
                 "I told my phone a joke, but it didn't get the reception.",
                 "Why was the computer cold? It left its Windows open.").random())
             has("help") || has("what can you do") ->
-                say("Try: call Rahul. Message Rahul saying hello. Navigate to the airport. Play music. Volume up. What is 15 times 12. Remind me in 10 minutes to cook. Set a timer for 5 minutes. Open WhatsApp. Flashlight on. Tell me a joke. Or ask me anything and I will search the web.")
+                say("Try: what is the weather. Good morning. Add milk to my shopping list. What is on my list. Call Rahul. Message Rahul saying hello. Navigate to the airport. Play music. Volume up. Set a timer for 5 minutes. Remind me in 10 minutes to cook. Open WhatsApp. Tell me a joke. Or ask me anything.")
             words.any { it == "hi" || it == "hello" || it == "hey" } -> say("Hello! How can I help?")
             else -> askClaude(t)
         }
@@ -249,7 +269,7 @@ class Commands(private val ctx: Context, private val say: (String) -> Unit, priv
                     JSONObject(get("https://en.wikipedia.org/api/rest_v1/page/summary/" + java.net.URLEncoder.encode(title, "UTF-8").replace("+", "%20")))
                         .optString("extract", "").split(". ").take(2).joinToString(". ").take(400).ifBlank { null }
             } catch (e: Exception) { null }
-            main.post { say(ans ?: "I couldn't find that. Add a Groq or Claude key in Settings for full answers, or say search, then your question.") }
+            main.post { lastWasAnswer = ans != null; say(ans ?: "I couldn't find that. Add a Groq or Claude key in Settings for full answers, or say search, then your question.") }
         }.start()
     }
 
@@ -312,7 +332,7 @@ class Commands(private val ctx: Context, private val say: (String) -> Unit, priv
         msgs.put(JSONObject().put("role", "user").put("content", q))
         val mem = sp.getString("mem", "") ?: ""
         callClaude("You are Brother, a male personal voice assistant for an Indian user. Understand English, Hindi and Hinglish and reply in the user's language. Answer in one to three short spoken sentences unless asked for detail. No markdown or lists. User-approved preferences: $mem", msgs) {
-            Chat.hist.add("user" to q); Chat.hist.add("assistant" to it); say(it)
+            Chat.hist.add("user" to q); Chat.hist.add("assistant" to it); lastWasAnswer = true; say(it)
         }
     }
 
@@ -337,6 +357,24 @@ class Commands(private val ctx: Context, private val say: (String) -> Unit, priv
     private fun dial(num: String) {
         val act = if (ctx.checkSelfPermission(Manifest.permission.CALL_PHONE) == PackageManager.PERMISSION_GRANTED) Intent.ACTION_CALL else Intent.ACTION_DIAL
         start(Intent(act, Uri.parse("tel:" + Uri.encode(num))))
+    }
+
+    private fun weatherSpoken(city: String, prefix: String) {
+        val main = Handler(Looper.getMainLooper())
+        Thread {
+            val ans = try {
+                val enc = java.net.URLEncoder.encode(city, "UTF-8")
+                val g = JSONObject(get("https://geocoding-api.open-meteo.com/v1/search?count=1&language=en&name=$enc")).getJSONArray("results").getJSONObject(0)
+                val w = JSONObject(get("https://api.open-meteo.com/v1/forecast?latitude=${g.getDouble("latitude")}&longitude=${g.getDouble("longitude")}&current=temperature_2m,weather_code,wind_speed_10m&timezone=auto")).getJSONObject("current")
+                val code = w.getInt("weather_code")
+                val sky = when { code == 0 -> "clear sky"; code <= 3 -> "partly cloudy"; code in 45..48 -> "foggy"; code in 51..57 -> "drizzle"; code in 61..67 -> "rainy"; code in 71..77 -> "snowy"; code in 80..82 -> "showers"; code >= 95 -> "thunderstorms"; else -> "cloudy" }
+                "In ${g.getString("name")} it's ${w.getDouble("temperature_2m").toInt()} degrees Celsius with $sky. Wind ${w.getDouble("wind_speed_10m").toInt()} kilometres per hour."
+            } catch (e: Exception) { null }
+            main.post {
+                if (ans == null) { start(Intent(Intent.ACTION_WEB_SEARCH).putExtra(SearchManager.QUERY, "weather $city")); say(prefix + "I couldn't get the weather directly, so I'm searching for it.") }
+                else say(prefix + ans)
+            }
+        }.start()
     }
 
     private fun waInstalled() = try { ctx.packageManager.getLaunchIntentForPackage("com.whatsapp") != null } catch (e: Exception) { false }
@@ -539,7 +577,7 @@ fun prepVoice(tts: TextToSpeech, ctx: Context, text: String) {
     }
 }
 
-object Bus { var onLog: ((String) -> Unit)? = null }
+object Bus { var onLog: ((String) -> Unit)? = null; var onState: ((String) -> Unit)? = null }
 
 private const val ROUTER = "You are Brother, a male voice assistant on an Indian user's Android phone. The user's words come from speech recognition and may contain mistakes, Hindi or Hinglish; work out what they really meant. If they want a phone action, reply with exactly one line starting with CMD: followed by the command in simple English, using only these forms: set a timer for N minutes | set an alarm for H:MM am | what time is it | what is the date | call NAME | message NAME saying TEXT | message NAME on whatsapp saying TEXT | navigate to PLACE | open APP | play music | play SONG | pause | next song | previous song | volume up | volume down | volume N | flashlight on | flashlight off | battery level | note TEXT | read my notes | remind me in N minutes to TASK | write an email about TOPIC | search TEXT | open wifi settings | open bluetooth settings | what is the weather. For anything else, answer the question directly in one to three short spoken sentences in the user's language, with no markdown or lists. User preferences: "
 
